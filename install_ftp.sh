@@ -238,6 +238,74 @@ else
     fi
 fi
 
+# ---- 选择 FTP 根目录 ----
+echo ""
+echo -e "${BLUE}📂 选择 FTP 根目录:${NC}"
+
+# 检测可用存储路径
+STORAGE_PATHS=()
+STORAGE_LABELS=()
+
+if [ "$ENV_TYPE" != "ubuntu" ]; then
+    # Termux: 检测 /storage 下的存储卷
+    if [ -d /storage/emulated/0 ]; then
+        STORAGE_PATHS+=("/storage/emulated/0")
+        STORAGE_LABELS+=("内置存储 (/storage/emulated/0)")
+    fi
+    if [ -d /storage ]; then
+        for vol in /storage/*; do
+            vol_name=$(basename "$vol")
+            [ "$vol_name" = "self" ] && continue
+            [ "$vol_name" = "emulated" ] && continue
+            if [ -d "$vol" ]; then
+                # 检测 shared 子目录
+                if [ -d "$vol/shared" ]; then
+                    STORAGE_PATHS+=("$vol/shared")
+                    STORAGE_LABELS+=("SD卡shared ($vol/shared)")
+                fi
+                STORAGE_PATHS+=("$vol")
+                STORAGE_LABELS+=("SD卡根目录 ($vol)")
+            fi
+        done
+    fi
+fi
+
+# Home 目录始终作为选项
+STORAGE_PATHS+=("$HOME")
+STORAGE_LABELS+=("用户主目录 ($HOME)")
+
+if [ ${#STORAGE_PATHS[@]} -le 1 ]; then
+    FTP_ROOT="$HOME"
+    echo -e "${GREEN}  使用默认目录: $FTP_ROOT${NC}"
+else
+    echo ""
+    for i in "${!STORAGE_PATHS[@]}"; do
+        idx=$((i + 1))
+        if [ -d "${STORAGE_PATHS[$i]}" ]; then
+            avail=$(df -h "${STORAGE_PATHS[$i]}" 2>/dev/null | tail -1 | awk '{print $4}' 2>/dev/null)
+            [ -n "$avail" ] && avail=" (可用: $avail)" || avail=""
+        else
+            avail=" (目录不存在)"
+        fi
+        echo -e "  ${BLUE}${idx})${NC} ${STORAGE_LABELS[$i]}${avail}"
+    done
+    echo ""
+    sel=$(read_tty "请选择 [1-${#STORAGE_PATHS[@]}]: ")
+    if [[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le ${#STORAGE_PATHS[@]} ]; then
+        FTP_ROOT="${STORAGE_PATHS[$((sel - 1))]}"
+    else
+        FTP_ROOT="$HOME"
+        echo -e "${YELLOW}⚠️ 无效选择，使用默认目录: $FTP_ROOT${NC}"
+    fi
+    echo -e "${GREEN}✅ FTP 根目录: $FTP_ROOT${NC}"
+fi
+
+# 检查目录是否存在
+if [ ! -d "$FTP_ROOT" ]; then
+    echo -e "${RED}❌ 目录不存在: $FTP_ROOT${NC}"
+    exit 1
+fi
+
 # ---- 获取 IP ----
 echo ""
 echo -e "${BLUE}📡 正在获取局域网 IP...${NC}"
@@ -286,7 +354,7 @@ import time
 FTP_USER = "root"
 FTP_PASS = "%%PASSWORD%%"
 FTP_PORT = 8021
-FTP_HOME = os.path.expanduser("~")
+FTP_HOME = "%%FTP_HOME%%"
 
 # ============ 日志配置 ============
 FTP_DIR = "%%FTP_DIR%%"
@@ -430,6 +498,7 @@ authorizer.add_user(FTP_USER, FTP_PASS, FTP_HOME, perm="elradfmwM")
 
 handler = LoggingFTPHandler
 handler.authorizer = authorizer
+handler.passive_ports = range(60000, 60100)
 
 server = FTPServer(("0.0.0.0", FTP_PORT), handler)
 
@@ -455,6 +524,7 @@ path = sys.argv[1]
 replacements = {
     '%%PASSWORD%%': sys.argv[2],
     '%%FTP_DIR%%': sys.argv[3],
+    '%%FTP_HOME%%': sys.argv[4],
 }
 with open(path, 'r', encoding='utf-8') as f:
     content = f.read()
@@ -462,7 +532,7 @@ for placeholder, value in replacements.items():
     content = content.replace(placeholder, value)
 with open(path, 'w', encoding='utf-8') as f:
     f.write(content)
-" "$FTP_SCRIPT" "$FTP_PASSWORD" "$FTP_DIR"
+" "$FTP_SCRIPT" "$FTP_PASSWORD" "$FTP_DIR" "$FTP_ROOT"
 
 chmod +x "$FTP_SCRIPT"
 echo -e "${GREEN}✅ FTP 服务脚本已创建: $FTP_SCRIPT${NC}"
@@ -486,6 +556,8 @@ case "\$1" in
         sleep 1
         if pgrep -f "\$FTP_SCRIPT" > /dev/null; then
             echo "FTP 服务已启动 (PID: \$(pgrep -f "\$FTP_SCRIPT"))"
+            echo "实时日志输出中（Ctrl+C 退出日志，服务不会停止）..."
+            tail -f "\$FTP_DIR/ftp_access.log" 2>/dev/null
         else
             echo "FTP 服务启动失败"
         fi
@@ -538,32 +610,10 @@ cat > "$INSTALL_MARKER" << EOF
 FTP_PASS=$FTP_PASSWORD
 LAN_IP=$LAN_IP
 FTP_DIR=$FTP_DIR
+FTP_ROOT=$FTP_ROOT
 INSTALL_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 EOF
 echo -e "${GREEN}✅ 安装标记已写入: $INSTALL_MARKER${NC}"
-
-# ---- 映射外部存储 ----
-echo -e "${BLUE}🔗 检测外部存储并创建映射...${NC}"
-if [ "$ENV_TYPE" == "ubuntu" ]; then
-    # Ubuntu: 映射 /media 和 /mnt 下的挂载点
-    for mount_point in /media/*/* /mnt/*; do
-        [ -d "$mount_point" ] || continue
-        link_name=$(basename "$mount_point")
-        ln -sf "$mount_point" "$FTP_HOME/$link_name" 2>/dev/null && \
-            echo -e "${GREEN}  ✅ $link_name -> $mount_point${NC}"
-    done
-else
-    # Termux: 映射 /storage 下的卷
-    if [ -d /storage ]; then
-        for vol in /storage/*; do
-            [ -e "$vol" ] || continue
-            vol_name=$(basename "$vol")
-            [ "$vol_name" = "self" ] && continue
-            ln -sf "$vol" "$FTP_HOME/$vol_name" 2>/dev/null && \
-                echo -e "${GREEN}  ✅ $vol_name -> $vol${NC}"
-        done
-    fi
-fi
 
 # ---- 启动服务 ----
 echo -e "${BLUE}🚀 启动 FTP 服务...${NC}"
@@ -575,6 +625,9 @@ sleep 2
 if pgrep -f "$FTP_SCRIPT" > /dev/null; then
     echo -e "${GREEN}✅ FTP 服务已启动${NC}"
     rm -f "$FTP_DIR/ftp_startup.log"
+    # 后台实时输出连接日志（不阻塞终端）
+    tail -f "$FTP_DIR/ftp_access.log" 2>/dev/null &
+    TAIL_PID=$!
 else
     echo -e "${RED}❌ FTP 服务启动失败${NC}"
     if [ -f "$FTP_DIR/ftp_startup.log" ]; then
@@ -598,6 +651,7 @@ echo "  用户名: root"
 echo "  密码: $FTP_PASSWORD"
 echo ""
 echo -e "${BLUE}📋 环境路径 ($ENV_TYPE):${NC}"
+echo "  FTP 根目录: $FTP_ROOT"
 echo "  服务目录: $FTP_DIR"
 echo "  服务脚本: $FTP_SCRIPT"
 echo "  日志文件: $FTP_DIR/ftp_access.log"
