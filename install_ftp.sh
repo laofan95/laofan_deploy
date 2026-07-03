@@ -286,6 +286,7 @@ import time
 FTP_USER = "root"
 FTP_PASS = "%%PASSWORD%%"
 FTP_PORT = 8021
+FTP_HOME = os.path.expanduser("~")
 
 # ============ 日志配置 ============
 FTP_DIR = "%%FTP_DIR%%"
@@ -425,7 +426,7 @@ class LoggingFTPHandler(FTPHandler):
         self.log_action("RMDIR", path=dirname, status="completed", message=f"目录已删除: {dirname}")
 
 authorizer = DummyAuthorizer()
-authorizer.add_user(FTP_USER, FTP_PASS, "/", perm="elradfmwM")
+authorizer.add_user(FTP_USER, FTP_PASS, FTP_HOME, perm="elradfmwM")
 
 handler = LoggingFTPHandler
 handler.authorizer = authorizer
@@ -437,6 +438,7 @@ print("FTP 服务已启动")
 print(f"端口: {FTP_PORT}")
 print(f"用户名: {FTP_USER}")
 print(f"密码: {FTP_PASS}")
+print(f"FTP 根目录: {FTP_HOME}")
 print(f"日志: {TEXT_LOG}")
 print("=" * 60)
 
