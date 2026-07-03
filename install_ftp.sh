@@ -329,32 +329,66 @@ fi
 
 # ---- 创建双向映射 ----
 echo -e "${BLUE}🔗 创建目录映射...${NC}"
-for i in "${!STORAGE_PATHS[@]}"; do
-    target="${STORAGE_PATHS[$i]}"
-    # 跳过已选为根目录的路径
-    [ "$target" = "$FTP_ROOT" ] && continue
-    # 跳过不存在的目录
-    [ -d "$target" ] || continue
-    # 生成简短别名
-    case "$target" in
-        "$HOME") link_name="home" ;;
-        /storage/emulated/0) link_name="内置存储" ;;
-        /storage/emulated/0/*) link_name=$(basename "$target") ;;
-        */shared) link_name="shared" ;;
-        *) link_name=$(basename "$target") ;;
-    esac
-    # 避免重复或冲突
-    if [ ! -e "$FTP_ROOT/$link_name" ]; then
-        ln -sf "$target" "$FTP_ROOT/$link_name"
-        echo -e "${GREEN}  ✅ $link_name -> $target${NC}"
+
+# 如果 FTP_ROOT 不是 Home，检查是否能在 FTP_ROOT 创建符号链接
+# 如果不能（如 Android 外部存储），改用 Home 作为 FTP 根
+NEED_HOME_ROOT=false
+if [ "$FTP_ROOT" != "$HOME" ]; then
+    if ! ln -sf "$HOME" "$FTP_ROOT/.ftp_link_test" 2>/dev/null; then
+        echo -e "${YELLOW}  ⚠️ $FTP_ROOT 不支持符号链接，改用主目录作为 FTP 根${NC}"
+        echo -e "${BLUE}  从主目录创建链接指向所有存储...${NC}"
+        NEED_HOME_ROOT=true
+    else
+        rm -f "$FTP_ROOT/.ftp_link_test" 2>/dev/null
     fi
-    # 反向映射：在目标目录也创建指向 FTP 根的链接
-    back_link_name=$(basename "$FTP_ROOT")
-    if [ ! -e "$target/$back_link_name" ] && [ -w "$target" ]; then
-        ln -sf "$FTP_ROOT" "$target/$back_link_name"
-        echo -e "${GREEN}  ✅ $target/$back_link_name -> $FTP_ROOT${NC}"
-    fi
-done
+fi
+
+if [ "$NEED_HOME_ROOT" = true ]; then
+    # 改用 Home 作为 FTP 根，在 Home 里创建指向所有存储的链接
+    for i in "${!STORAGE_PATHS[@]}"; do
+        target="${STORAGE_PATHS[$i]}"
+        [ "$target" = "$HOME" ] && continue
+        [ -d "$target" ] || continue
+        case "$target" in
+            "$HOME") link_name="home" ;;
+            /storage/emulated/0) link_name="内置存储" ;;
+            /storage/emulated/0/*) link_name=$(basename "$target") ;;
+            */shared) link_name="shared" ;;
+            *) link_name=$(basename "$target") ;;
+        esac
+        if [ ! -e "$HOME/$link_name" ]; then
+            if ln -sf "$target" "$HOME/$link_name" 2>/dev/null; then
+                echo -e "${GREEN}  ✅ $link_name -> $target${NC}"
+            fi
+        fi
+    done
+    FTP_ROOT="$HOME"
+    echo -e "${GREEN}✅ FTP 根目录已调整为: $FTP_ROOT${NC}"
+else
+    for i in "${!STORAGE_PATHS[@]}"; do
+        target="${STORAGE_PATHS[$i]}"
+        [ "$target" = "$FTP_ROOT" ] && continue
+        [ -d "$target" ] || continue
+        case "$target" in
+            "$HOME") link_name="home" ;;
+            /storage/emulated/0) link_name="内置存储" ;;
+            /storage/emulated/0/*) link_name=$(basename "$target") ;;
+            */shared) link_name="shared" ;;
+            *) link_name=$(basename "$target") ;;
+        esac
+        if [ ! -e "$FTP_ROOT/$link_name" ]; then
+            if ln -sf "$target" "$FTP_ROOT/$link_name" 2>/dev/null; then
+                echo -e "${GREEN}  ✅ $link_name -> $target${NC}"
+            else
+                echo -e "${YELLOW}  ⚠️ 无法在 $FTP_ROOT 创建映射（权限不足）${NC}"
+            fi
+        fi
+        back_link_name=$(basename "$FTP_ROOT")
+        if [ ! -e "$target/$back_link_name" ] && [ -w "$target" ]; then
+            ln -sf "$FTP_ROOT" "$target/$back_link_name" 2>/dev/null
+        fi
+    done
+fi
 
 # ---- 获取 IP ----
 echo ""
