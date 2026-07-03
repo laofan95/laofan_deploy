@@ -106,9 +106,11 @@ do_uninstall() {
     echo -e "  1. 停止 FTP 服务"
     echo -e "  2. 删除服务脚本: $FTP_SCRIPT"
     echo -e "  3. 删除管理脚本: $MANAGER_PATH"
-    echo -e "  4. 删除软链接: $LINK_PATH"
-    echo -e "  5. 删除日志文件: $FTP_DIR/ftp_access.*"
-    echo -e "  6. 删除安装标记: $INSTALL_MARKER"
+    echo -e "  4. 删除快捷命令: $PREFIX/bin/ftp"
+    echo -e "  5. 删除软链接: $LINK_PATH"
+    echo -e "  6. 删除目录映射"
+    echo -e "  7. 删除日志文件: $FTP_DIR/ftp_access.*"
+    echo -e "  8. 删除安装标记: $INSTALL_MARKER"
     echo ""
 
     if [ "$FORCE_INSTALL" = false ]; then
@@ -131,14 +133,33 @@ do_uninstall() {
     rm -f "$MANAGER_PATH"
     echo -e "${GREEN}  ✅ 管理脚本已删除${NC}"
 
+    rm -f "$PREFIX/bin/ftp" "$FTP_DIR/ftp-shortcut.sh"
+    echo -e "${GREEN}  ✅ 快捷命令已删除${NC}"
+
     rm -f "$LINK_PATH"
     echo -e "${GREEN}  ✅ 软链接已删除${NC}"
 
     rm -f "$FTP_DIR/ftp_access.json" "$FTP_DIR/ftp_access.log"
     echo -e "${GREEN}  ✅ 日志文件已删除${NC}"
 
+    # 删除安装标记（先读取 FTP_ROOT 用于清理映射）
+    if [ -f "$INSTALL_MARKER" ]; then
+        SAVED_FTP_ROOT=$(grep "^FTP_ROOT=" "$INSTALL_MARKER" 2>/dev/null | cut -d= -f2-)
+    fi
     rm -f "$INSTALL_MARKER"
     echo -e "${GREEN}  ✅ 安装标记已删除${NC}"
+
+    # 清理目录映射
+    if [ -n "$SAVED_FTP_ROOT" ] && [ -d "$SAVED_FTP_ROOT" ]; then
+        find "$SAVED_FTP_ROOT" -maxdepth 1 -type l -name "home" -delete 2>/dev/null
+        find "$SAVED_FTP_ROOT" -maxdepth 1 -type l -name "内置存储" -delete 2>/dev/null
+        find "$SAVED_FTP_ROOT" -maxdepth 1 -type l -name "shared" -delete 2>/dev/null
+        find "$SAVED_FTP_ROOT" -maxdepth 1 -type l -name "emulated" -delete 2>/dev/null
+        # 清理反向链接
+        [ -n "$HOME" ] && find "$HOME" -maxdepth 1 -type l -name "emulated" -delete 2>/dev/null
+        [ -n "$HOME" ] && find "$HOME" -maxdepth 1 -type l -name "BA73-022B" -delete 2>/dev/null
+        echo -e "${GREEN}  ✅ 目录映射已清理${NC}"
+    fi
 
     if [ "$ENV_TYPE" == "ubuntu" ]; then
         rmdir "$FTP_DIR" 2>/dev/null && echo -e "${GREEN}  ✅ FTP 目录已删除${NC}" || true
@@ -305,6 +326,35 @@ if [ ! -d "$FTP_ROOT" ]; then
     echo -e "${RED}❌ 目录不存在: $FTP_ROOT${NC}"
     exit 1
 fi
+
+# ---- 创建双向映射 ----
+echo -e "${BLUE}🔗 创建目录映射...${NC}"
+for i in "${!STORAGE_PATHS[@]}"; do
+    target="${STORAGE_PATHS[$i]}"
+    # 跳过已选为根目录的路径
+    [ "$target" = "$FTP_ROOT" ] && continue
+    # 跳过不存在的目录
+    [ -d "$target" ] || continue
+    # 生成简短别名
+    case "$target" in
+        "$HOME") link_name="home" ;;
+        /storage/emulated/0) link_name="内置存储" ;;
+        /storage/emulated/0/*) link_name=$(basename "$target") ;;
+        */shared) link_name="shared" ;;
+        *) link_name=$(basename "$target") ;;
+    esac
+    # 避免重复或冲突
+    if [ ! -e "$FTP_ROOT/$link_name" ]; then
+        ln -sf "$target" "$FTP_ROOT/$link_name"
+        echo -e "${GREEN}  ✅ $link_name -> $target${NC}"
+    fi
+    # 反向映射：在目标目录也创建指向 FTP 根的链接
+    back_link_name=$(basename "$FTP_ROOT")
+    if [ ! -e "$target/$back_link_name" ] && [ -w "$target" ]; then
+        ln -sf "$FTP_ROOT" "$target/$back_link_name"
+        echo -e "${GREEN}  ✅ $target/$back_link_name -> $FTP_ROOT${NC}"
+    fi
+done
 
 # ---- 获取 IP ----
 echo ""
@@ -605,6 +655,41 @@ mkdir -p "$(dirname "$LINK_PATH")" 2>/dev/null || true
 ln -sf "$MANAGER_PATH" "$LINK_PATH"
 echo -e "${GREEN}✅ 管理命令已安装: ftp-manager${NC}"
 
+# ---- 创建 ftp 快捷命令 ----
+FTP_SHORTCUT_PATH="$FTP_DIR/ftp-shortcut.sh"
+cat > "$FTP_SHORTCUT_PATH" << SHORTCUTEOF
+#!/bin/bash
+# ftp 快捷启动命令
+FTP_SCRIPT="$FTP_SCRIPT"
+FTP_LOG="$FTP_DIR/ftp_access.log"
+
+if pgrep -f "\$FTP_SCRIPT" > /dev/null; then
+    echo "FTP 服务已在运行 (PID: \$(pgrep -f "\$FTP_SCRIPT"))"
+    echo "显示实时日志（Ctrl+C 退出日志，服务不会停止）..."
+    tail -f "\$FTP_LOG" 2>/dev/null
+    exit 0
+fi
+
+echo "启动 FTP 服务..."
+nohup python3 "\$FTP_SCRIPT" > /dev/null 2>&1 &
+sleep 1
+if pgrep -f "\$FTP_SCRIPT" > /dev/null; then
+    echo "FTP 服务已启动 (PID: \$(pgrep -f "\$FTP_SCRIPT"))"
+    echo "实时日志输出（Ctrl+C 退出日志，服务不会停止）..."
+    tail -f "\$FTP_LOG" 2>/dev/null
+else
+    echo "FTP 服务启动失败"
+    exit 1
+fi
+SHORTCUTEOF
+chmod +x "$FTP_SHORTCUT_PATH"
+
+# 创建快捷软链接
+FTP_SHORTCUT_LINK="$PREFIX/bin/ftp"
+mkdir -p "$(dirname "$FTP_SHORTCUT_LINK")" 2>/dev/null || true
+ln -sf "$FTP_SHORTCUT_PATH" "$FTP_SHORTCUT_LINK"
+echo -e "${GREEN}✅ 快捷命令已安装: ftp${NC}"
+
 # ---- 写入安装标记 ----
 cat > "$INSTALL_MARKER" << EOF
 FTP_PASS=$FTP_PASSWORD
@@ -658,6 +743,7 @@ echo "  日志文件: $FTP_DIR/ftp_access.log"
 echo "  安装标记: $INSTALL_MARKER"
 echo ""
 echo -e "${BLUE}📋 管理命令:${NC}"
+echo "  ftp                 - 快捷启动（已运行则显示日志）"
 echo "  ftp-manager start   - 启动服务"
 echo "  ftp-manager stop    - 停止服务"
 echo "  ftp-manager restart - 重启服务"
