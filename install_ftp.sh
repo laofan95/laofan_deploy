@@ -50,10 +50,8 @@ read_tty() {
     local prompt="$1"
     local result=""
     if [ -t 0 ]; then
-        # 标准输入是终端，直接读取
         read -p "$prompt" result
     else
-        # 标准输入是管道（curl | bash），从 /dev/tty 读取
         read -p "$prompt" result < /dev/tty
     fi
     echo "$result"
@@ -99,7 +97,6 @@ do_uninstall() {
     echo -e "${GREEN}✅ 检测到环境: $ENV_TYPE${NC}"
     echo ""
 
-    # 检查是否已安装
     if [ ! -f "$INSTALL_MARKER" ] && [ ! -f "$FTP_SCRIPT" ]; then
         echo -e "${YELLOW}⚠️ 未检测到已安装的 FTP 服务${NC}"
         exit 0
@@ -125,31 +122,24 @@ do_uninstall() {
     echo ""
     echo -e "${BLUE}🔄 正在卸载 FTP 服务...${NC}"
 
-    # 停止服务
     pkill -f "$FTP_SCRIPT" 2>/dev/null || true
     echo -e "${GREEN}  ✅ 服务已停止${NC}"
 
-    # 删除服务脚本
     rm -f "$FTP_SCRIPT"
     echo -e "${GREEN}  ✅ 服务脚本已删除${NC}"
 
-    # 删除管理脚本
     rm -f "$MANAGER_PATH"
     echo -e "${GREEN}  ✅ 管理脚本已删除${NC}"
 
-    # 删除软链接
     rm -f "$LINK_PATH"
     echo -e "${GREEN}  ✅ 软链接已删除${NC}"
 
-    # 删除日志
     rm -f "$FTP_DIR/ftp_access.json" "$FTP_DIR/ftp_access.log"
     echo -e "${GREEN}  ✅ 日志文件已删除${NC}"
 
-    # 删除安装标记
     rm -f "$INSTALL_MARKER"
     echo -e "${GREEN}  ✅ 安装标记已删除${NC}"
 
-    # 如果是 Ubuntu 环境，尝试删除整个 ftp 目录（如果为空）
     if [ "$ENV_TYPE" == "ubuntu" ]; then
         rmdir "$FTP_DIR" 2>/dev/null && echo -e "${GREEN}  ✅ FTP 目录已删除${NC}" || true
     fi
@@ -259,25 +249,29 @@ if [ "$ENV_TYPE" == "ubuntu" ]; then
     echo -e "${BLUE}📥 安装 Python 依赖...${NC}"
     apt update -qq 2>/dev/null
     apt install python3 python3-pip -y -qq 2>/dev/null
-    pip3 install pyftpdlib --break-system-packages -q 2>/dev/null || pip3 install pyftpdlib -q 2>/dev/null
+    pip3 install pyftpdlib --break-system-packages 2>&1 || pip3 install pyftpdlib 2>&1
     mkdir -p "$FTP_DIR"
 else
     echo -e "${BLUE}📥 安装 Python 依赖...${NC}"
     pkg update -y -q 2>/dev/null
     pkg install python -y -q 2>/dev/null
-    pip install pyftpdlib -q 2>/dev/null || pip3 install pyftpdlib -q 2>/dev/null
+    pip install pyftpdlib 2>&1 || pip3 install pyftpdlib 2>&1
     mkdir -p "$FTP_DIR"
 fi
+
+# ---- 验证 pyftpdlib 安装 ----
+if ! python3 -c "import pyftpdlib" 2>/dev/null; then
+    echo -e "${RED}❌ pyftpdlib 安装失败，请手动运行: pip install pyftpdlib${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ pyftpdlib 已就绪${NC}"
 
 # ---- 创建 FTP 服务脚本 ----
 echo -e "${BLUE}📝 创建 FTP 服务脚本...${NC}"
 
-# 使用 Python 安全写入脚本（避免 sed 处理特殊字符问题）
-python3 -c "
-import sys
-
-password = sys.argv[1]
-script = '''#!/usr/bin/env python3
+# 使用 heredoc 写入模板（单引号 EOF 阻止 bash 展开），再用 Python 安全替换密码
+cat > "$FTP_SCRIPT" << 'PYEOF'
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from pyftpdlib.authorizers import DummyAuthorizer
@@ -289,39 +283,39 @@ import os
 import time
 
 # ============ 用户配置 ============
-FTP_USER = \"root\"
-FTP_PASS = \"''' + password + '''\"
+FTP_USER = "root"
+FTP_PASS = "%%PASSWORD%%"
 FTP_PORT = 8021
 
 # ============ 日志配置 ============
-FTP_DIR = \"''' + sys.argv[2] + '''\"
-JSON_LOG = os.path.join(FTP_DIR, \"ftp_access.json\")
-TEXT_LOG = os.path.join(FTP_DIR, \"ftp_access.log\")
+FTP_DIR = "%%FTP_DIR%%"
+JSON_LOG = os.path.join(FTP_DIR, "ftp_access.json")
+TEXT_LOG = os.path.join(FTP_DIR, "ftp_access.log")
 os.makedirs(FTP_DIR, exist_ok=True)
 
 # ============ 操作类型映射 ============
 CMD_MAP = {
-    \"CONNECT\": \"🔌 连接\",
-    \"LOGIN\": \"🔑 登录\",
-    \"LOGIN_FAILED\": \"❌ 登录失败\",
-    \"DISCONNECT\": \"🔌 断开连接\",
-    \"DOWNLOAD\": \"📥 下载\",
-    \"UPLOAD\": \"📤 上传\",
-    \"DELETE\": \"🗑️ 删除\",
-    \"RENAME\": \"📝 重命名\",
-    \"MKDIR\": \"📁 创建目录\",
-    \"RMDIR\": \"🗑️ 删除目录\"
+    "CONNECT": "连接",
+    "LOGIN": "登录",
+    "LOGIN_FAILED": "登录失败",
+    "DISCONNECT": "断开连接",
+    "DOWNLOAD": "下载",
+    "UPLOAD": "上传",
+    "DELETE": "删除",
+    "RENAME": "重命名",
+    "MKDIR": "创建目录",
+    "RMDIR": "删除目录"
 }
 
 def format_size(size):
-    if size == 0: return \"-\"
-    if size < 1024: return f\"{size} B\"
-    if size < 1024 * 1024: return f\"{size // 1024} KB\"
-    return f\"{size // (1024 * 1024)} MB\"
+    if size == 0: return "-"
+    if size < 1024: return f"{size} B"
+    if size < 1024 * 1024: return f"{size // 1024} KB"
+    return f"{size // (1024 * 1024)} MB"
 
 def format_timestamp(ts):
     try:
-        return datetime.fromisoformat(ts).strftime(\"%Y-%m-%d %H:%M:%S\")
+        return datetime.fromisoformat(ts).strftime("%Y-%m-%d %H:%M:%S")
     except:
         return ts
 
@@ -329,43 +323,46 @@ def write_json_log(entry):
     try:
         logs = []
         if os.path.exists(JSON_LOG) and os.path.getsize(JSON_LOG) > 0:
-            with open(JSON_LOG, \"r\", encoding=\"utf-8\") as f:
+            with open(JSON_LOG, "r", encoding="utf-8") as f:
                 logs = json.load(f)
         logs.append(entry)
         if len(logs) > 10000: logs = logs[-10000:]
-        with open(JSON_LOG, \"w\", encoding=\"utf-8\") as f:
+        with open(JSON_LOG, "w", encoding="utf-8") as f:
             json.dump(logs, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f\"⚠️ JSON日志写入失败: {e}\")
+        print(f"JSON日志写入失败: {e}")
 
 def write_text_log(entry):
     try:
-        ts = format_timestamp(entry.get(\"timestamp\", \"\"))
-        ip = entry.get(\"client_ip\", \"unknown\")
-        user = entry.get(\"username\", \"anonymous\")
-        cmd = entry.get(\"command\", \"\")
-        path = entry.get(\"path\", \"\")
-        status = entry.get(\"status\", \"\")
-        size = entry.get(\"file_size\", 0)
-        msg = entry.get(\"message\", \"\")
+        ts = format_timestamp(entry.get("timestamp", ""))
+        ip = entry.get("client_ip", "unknown")
+        user = entry.get("username", "anonymous")
+        cmd = entry.get("command", "")
+        path = entry.get("path", "")
+        status = entry.get("status", "")
+        size = entry.get("file_size", 0)
+        msg = entry.get("message", "")
 
-        lines = [\"──────────────────\"]
-        lines.append(f\"📅 时间: {ts}\")
-        lines.append(f\"📡 客户端IP: {ip}\")
-        lines.append(f\"👤 操作用户: {user}\")
-        lines.append(f\"📌 操作类型: {CMD_MAP.get(cmd, cmd)}\")
-        if path and path != \"\":
-            lines.append(f\"📂 操作路径: {path}\")
-        lines.append(f\"📊 状态: {\"✅\" if status in [\"success\",\"completed\",\"\"] else \"❌\"}\")
-        if msg: lines.append(f\"📝 详情: {msg}\")
-        if size > 0: lines.append(f\"📄 文件大小: {format_size(size)}\")
-        lines.append(\"──────────────────\")
+        lines = ["-" * 40]
+        lines.append(f"时间: {ts}")
+        lines.append(f"客户端IP: {ip}")
+        lines.append(f"操作用户: {user}")
+        lines.append(f"操作类型: {CMD_MAP.get(cmd, cmd)}")
+        if path:
+            lines.append(f"操作路径: {path}")
+        status_icon = "[OK]" if status in ("success", "completed", "") else "[FAIL]"
+        lines.append(f"状态: {status_icon}")
+        if msg:
+            lines.append(f"详情: {msg}")
+        if size > 0:
+            lines.append(f"文件大小: {format_size(size)}")
+        lines.append("-" * 40)
 
-        with open(TEXT_LOG, \"a\", encoding=\"utf-8\") as f:
-            f.write(\"\\n\".join(lines) + \"\\n\")
-        print(\"\\n\".join(lines))
+        with open(TEXT_LOG, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print("\n".join(lines))
     except Exception as e:
-        print(f\"⚠️ 文本日志写入失败: {e}\")
+        print(f"文本日志写入失败: {e}")
 
 def write_log(entry):
     write_json_log(entry)
@@ -374,84 +371,96 @@ def write_log(entry):
 class LoggingFTPHandler(FTPHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.username = \"anonymous\"
+        self.username = "anonymous"
 
-    def log_action(self, command, path=\"\", status=\"\", message=\"\", size=0):
+    def log_action(self, command, path="", status="", message="", size=0):
         entry = {
-            \"timestamp\": datetime.now().isoformat(),
-            \"timestamp_unix\": time.time(),
-            \"client_ip\": self.remote_ip or \"unknown\",
-            \"client_port\": self.remote_port or 0,
-            \"username\": self.username or \"anonymous\",
-            \"command\": command,
-            \"path\": path,
-            \"status\": status,
-            \"message\": message,
-            \"file_size\": size
+            "timestamp": datetime.now().isoformat(),
+            "timestamp_unix": time.time(),
+            "client_ip": self.remote_ip or "unknown",
+            "client_port": self.remote_port or 0,
+            "username": self.username or "anonymous",
+            "command": command,
+            "path": path,
+            "status": status,
+            "message": message,
+            "file_size": size
         }
         write_log(entry)
 
     def on_connect(self):
-        self.log_action(\"CONNECT\", message=f\"客户端 {self.remote_ip}:{self.remote_port} 已连接\")
+        self.log_action("CONNECT", message=f"客户端 {self.remote_ip}:{self.remote_port} 已连接")
         super().on_connect()
 
     def on_disconnect(self):
-        self.log_action(\"DISCONNECT\", message=f\"客户端 {self.remote_ip}:{self.remote_port} 已断开\")
+        self.log_action("DISCONNECT", message=f"客户端 {self.remote_ip}:{self.remote_port} 已断开")
         super().on_disconnect()
 
     def on_login(self, username):
         self.username = username
-        self.log_action(\"LOGIN\", status=\"success\", message=f\"用户 {username} 登录成功\")
+        self.log_action("LOGIN", status="success", message=f"用户 {username} 登录成功")
         super().on_login(username)
 
     def on_login_failed(self, username, password):
-        self.log_action(\"LOGIN_FAILED\", status=\"failed\", message=f\"用户 {username} 登录失败\")
+        self.log_action("LOGIN_FAILED", status="failed", message=f"用户 {username} 登录失败")
 
     def on_file_received(self, file):
         size = os.path.getsize(file) if os.path.exists(file) else 0
-        self.log_action(\"UPLOAD\", path=file, status=\"completed\", message=f\"文件上传完成: {file}\", size=size)
+        self.log_action("UPLOAD", path=file, status="completed", message=f"文件上传完成: {file}", size=size)
 
     def on_file_sent(self, file):
         size = os.path.getsize(file) if os.path.exists(file) else 0
-        self.log_action(\"DOWNLOAD\", path=file, status=\"completed\", message=f\"文件下载完成: {file}\", size=size)
+        self.log_action("DOWNLOAD", path=file, status="completed", message=f"文件下载完成: {file}", size=size)
 
     def on_file_deleted(self, file):
-        self.log_action(\"DELETE\", path=file, status=\"completed\", message=f\"文件已删除: {file}\")
+        self.log_action("DELETE", path=file, status="completed", message=f"文件已删除: {file}")
 
     def on_file_renamed(self, old, new):
-        self.log_action(\"RENAME\", path=f\"{old} -> {new}\", status=\"completed\", message=f\"文件已重命名: {old} -> {new}\")
+        self.log_action("RENAME", path=f"{old} -> {new}", status="completed", message=f"文件已重命名: {old} -> {new}")
 
     def on_mkdir(self, dirname):
-        self.log_action(\"MKDIR\", path=dirname, status=\"completed\", message=f\"目录已创建: {dirname}\")
+        self.log_action("MKDIR", path=dirname, status="completed", message=f"目录已创建: {dirname}")
 
     def on_rmdir(self, dirname):
-        self.log_action(\"RMDIR\", path=dirname, status=\"completed\", message=f\"目录已删除: {dirname}\")
+        self.log_action("RMDIR", path=dirname, status="completed", message=f"目录已删除: {dirname}")
 
 authorizer = DummyAuthorizer()
-authorizer.add_user(FTP_USER, FTP_PASS, \"/\", perm=\"elradfmwM\")
+authorizer.add_user(FTP_USER, FTP_PASS, "/", perm="elradfmwM")
 
 handler = LoggingFTPHandler
 handler.authorizer = authorizer
 
-server = FTPServer((\"0.0.0.0\", FTP_PORT), handler)
+server = FTPServer(("0.0.0.0", FTP_PORT), handler)
 
-print(\"=\" * 60)
-print(\"📁 FTP 服务已启动\")
-print(f\"📍 端口: {FTP_PORT}\")
-print(f\"👤 用户名: {FTP_USER}\")
-print(f\"🔑 密码: {FTP_PASS}\")
-print(f\"📄 日志: {TEXT_LOG}\")
-print(\"=\" * 60)
+print("=" * 60)
+print("FTP 服务已启动")
+print(f"端口: {FTP_PORT}")
+print(f"用户名: {FTP_USER}")
+print(f"密码: {FTP_PASS}")
+print(f"日志: {TEXT_LOG}")
+print("=" * 60)
 
 try:
     server.serve_forever()
 except KeyboardInterrupt:
-    print(\"\\n🛑 FTP 服务已停止\")
-'''
+    print("\nFTP 服务已停止")
+PYEOF
 
-with open(sys.argv[3], 'w', encoding='utf-8') as f:
-    f.write(script)
-" "$FTP_PASSWORD" "$FTP_DIR" "$FTP_SCRIPT"
+# 用 Python 安全替换占位符（处理密码中的特殊字符）
+python3 -c "
+import sys
+path = sys.argv[1]
+replacements = {
+    '%%PASSWORD%%': sys.argv[2],
+    '%%FTP_DIR%%': sys.argv[3],
+}
+with open(path, 'r', encoding='utf-8') as f:
+    content = f.read()
+for placeholder, value in replacements.items():
+    content = content.replace(placeholder, value)
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(content)
+" "$FTP_SCRIPT" "$FTP_PASSWORD" "$FTP_DIR"
 
 chmod +x "$FTP_SCRIPT"
 echo -e "${GREEN}✅ FTP 服务脚本已创建: $FTP_SCRIPT${NC}"
@@ -459,37 +468,30 @@ echo -e "${GREEN}✅ FTP 服务脚本已创建: $FTP_SCRIPT${NC}"
 # ---- 生成管理命令 ----
 echo -e "${BLUE}📝 生成管理命令...${NC}"
 
-# 使用 Python 写入管理脚本（避免 heredoc 中变量替换问题）
-python3 -c "
-import sys
-
-ftp_dir = sys.argv[1]
-ftp_script = sys.argv[2]
-manager_path = sys.argv[3]
-
-script = '''#!/bin/bash
+cat > "$MANAGER_PATH" << MANAGEREOF
+#!/bin/bash
 # ============================================
 # FTP 服务管理命令
 # ============================================
 
-FTP_SCRIPT=\"''' + ftp_script + '''\"
-FTP_DIR=\"''' + ftp_dir + '''\"
+FTP_SCRIPT="$FTP_SCRIPT"
+FTP_DIR="$FTP_DIR"
 
-case \"\$1\" in
+case "\$1" in
     start)
-        echo \"🚀 启动 FTP 服务...\"
-        nohup python3 \"\$FTP_SCRIPT\" > /dev/null 2>&1 &
+        echo "启动 FTP 服务..."
+        nohup python3 "\$FTP_SCRIPT" > /dev/null 2>&1 &
         sleep 1
-        if pgrep -f \"\$FTP_SCRIPT\" > /dev/null; then
-            echo \"✅ FTP 服务已启动 (PID: \$(pgrep -f \"\$FTP_SCRIPT\"))\"
+        if pgrep -f "\$FTP_SCRIPT" > /dev/null; then
+            echo "FTP 服务已启动 (PID: \$(pgrep -f "\$FTP_SCRIPT"))"
         else
-            echo \"❌ FTP 服务启动失败\"
+            echo "FTP 服务启动失败"
         fi
         ;;
     stop)
-        echo \"🛑 停止 FTP 服务...\"
-        pkill -f \"\$FTP_SCRIPT\"
-        echo \"✅ FTP 服务已停止\"
+        echo "停止 FTP 服务..."
+        pkill -f "\$FTP_SCRIPT"
+        echo "FTP 服务已停止"
         ;;
     restart)
         \$0 stop
@@ -497,34 +499,30 @@ case \"\$1\" in
         \$0 start
         ;;
     status)
-        if pgrep -f \"\$FTP_SCRIPT\" > /dev/null; then
-            echo \"✅ FTP 服务运行中 (PID: \$(pgrep -f \"\$FTP_SCRIPT\"))\"
+        if pgrep -f "\$FTP_SCRIPT" > /dev/null; then
+            echo "FTP 服务运行中 (PID: \$(pgrep -f "\$FTP_SCRIPT"))"
         else
-            echo \"❌ FTP 服务未运行\"
+            echo "FTP 服务未运行"
         fi
         ;;
     logs)
-        if [ -f \"\$FTP_DIR/ftp_access.log\" ]; then
-            tail -f \"\$FTP_DIR/ftp_access.log\"
+        if [ -f "\$FTP_DIR/ftp_access.log" ]; then
+            tail -f "\$FTP_DIR/ftp_access.log"
         else
-            echo \"❌ 日志文件不存在\"
+            echo "日志文件不存在"
         fi
         ;;
     *)
-        echo \"用法: ftp-manager {start|stop|restart|status|logs}\"
-        echo \"\"
-        echo \"  start   - 启动 FTP 服务\"
-        echo \"  stop    - 停止 FTP 服务\"
-        echo \"  restart - 重启 FTP 服务\"
-        echo \"  status  - 查看服务状态\"
-        echo \"  logs    - 实时查看日志\"
+        echo "用法: ftp-manager {start|stop|restart|status|logs}"
+        echo ""
+        echo "  start   - 启动 FTP 服务"
+        echo "  stop    - 停止 FTP 服务"
+        echo "  restart - 重启 FTP 服务"
+        echo "  status  - 查看服务状态"
+        echo "  logs    - 实时查看日志"
         ;;
 esac
-'''
-
-with open(manager_path, 'w', encoding='utf-8') as f:
-    f.write(script)
-" "$FTP_DIR" "$FTP_SCRIPT" "$MANAGER_PATH"
+MANAGEREOF
 
 chmod +x "$MANAGER_PATH"
 
@@ -546,13 +544,18 @@ echo -e "${GREEN}✅ 安装标记已写入: $INSTALL_MARKER${NC}"
 echo -e "${BLUE}🚀 启动 FTP 服务...${NC}"
 pkill -f "$FTP_SCRIPT" 2>/dev/null || true
 sleep 1
-nohup python3 "$FTP_SCRIPT" > /dev/null 2>&1 &
+nohup python3 "$FTP_SCRIPT" > "$FTP_DIR/ftp_startup.log" 2>&1 &
 sleep 2
 
 if pgrep -f "$FTP_SCRIPT" > /dev/null; then
     echo -e "${GREEN}✅ FTP 服务已启动${NC}"
+    rm -f "$FTP_DIR/ftp_startup.log"
 else
     echo -e "${RED}❌ FTP 服务启动失败${NC}"
+    if [ -f "$FTP_DIR/ftp_startup.log" ]; then
+        echo -e "${RED}错误信息:${NC}"
+        cat "$FTP_DIR/ftp_startup.log"
+    fi
     echo -e "${YELLOW}💡 尝试手动启动: python3 $FTP_SCRIPT${NC}"
     exit 1
 fi
