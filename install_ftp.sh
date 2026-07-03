@@ -542,6 +542,29 @@ INSTALL_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 EOF
 echo -e "${GREEN}✅ 安装标记已写入: $INSTALL_MARKER${NC}"
 
+# ---- 映射外部存储 ----
+echo -e "${BLUE}🔗 检测外部存储并创建映射...${NC}"
+if [ "$ENV_TYPE" == "ubuntu" ]; then
+    # Ubuntu: 映射 /media 和 /mnt 下的挂载点
+    for mount_point in /media/*/* /mnt/*; do
+        [ -d "$mount_point" ] || continue
+        link_name=$(basename "$mount_point")
+        ln -sf "$mount_point" "$FTP_HOME/$link_name" 2>/dev/null && \
+            echo -e "${GREEN}  ✅ $link_name -> $mount_point${NC}"
+    done
+else
+    # Termux: 映射 /storage 下的卷
+    if [ -d /storage ]; then
+        for vol in /storage/*; do
+            [ -e "$vol" ] || continue
+            vol_name=$(basename "$vol")
+            [ "$vol_name" = "self" ] && continue
+            ln -sf "$vol" "$FTP_HOME/$vol_name" 2>/dev/null && \
+                echo -e "${GREEN}  ✅ $vol_name -> $vol${NC}"
+        done
+    fi
+fi
+
 # ---- 启动服务 ----
 echo -e "${BLUE}🚀 启动 FTP 服务...${NC}"
 pkill -f "$FTP_SCRIPT" 2>/dev/null || true
